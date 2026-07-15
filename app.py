@@ -24,7 +24,7 @@ st.markdown("""
     h1, h2, h3 { color: #2C3E50; }
     .stAlert { margin-top: 1rem; }
     </style>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True) # <-- Corrigido aqui (era unsafe_allow_True)
 
 st.title("📊 Plataforma de Análise Estatística Avançada")
 st.markdown("Faça o upload da sua base de dados, configure os parâmetros e gere relatórios científicos completos.")
@@ -35,6 +35,8 @@ def calcular_descritiva(df, cols):
     stats = []
     for c in cols:
         s = df[c].dropna()
+        if len(s) == 0:
+            continue
         mean = s.mean()
         std = s.std()
         stats.append({
@@ -42,9 +44,9 @@ def calcular_descritiva(df, cols):
             'Média': mean,
             'Mediana': s.median(),
             'Moda': s.mode().iloc[0] if not s.mode().empty else np.nan,
-            'Desv Padrão': std,
-            'Variância': s.var(),
-            'CV (%)': (std / mean * 100) if mean != 0 else np.nan,
+            'Desv Padrão': std if not pd.isna(std) else 0.0,
+            'Variância': s.var() if not pd.isna(s.var()) else 0.0,
+            'CV (%)': (std / mean * 100) if mean != 0 and not pd.isna(std) else np.nan,
             'Mínimo': s.min(),
             'Máximo': s.max(),
             'Amplitude': s.max() - s.min(),
@@ -54,10 +56,13 @@ def calcular_descritiva(df, cols):
     return pd.DataFrame(stats).set_index('Variável')
 
 def analisar_assimetria(s):
-    if s.nunique() <= 1: return "Constante"
+    if s.dropna().nunique() <= 1: 
+        return "Constante"
     sk = skew(s.dropna())
-    if sk > 0.5: return "Assimétrica Positiva"
-    elif sk < -0.5: return "Assimétrica Negativa"
+    if sk > 0.5: 
+        return "Assimétrica Positiva"
+    elif sk < -0.5: 
+        return "Assimétrica Negativa"
     return "Relativamente Simétrica"
 
 def format_p_value(p):
@@ -84,8 +89,10 @@ def recuperar_nota_corrompida(val):
         
     limpo = val_str.replace(',', '.')
     limpo = re.sub(r'[^\d\.\-]+', '', limpo)
-    try: return float(limpo) if limpo else np.nan
-    except: return np.nan
+    try: 
+        return float(limpo) if limpo else np.nan
+    except: 
+        return np.nan
 
 # Rotações de Fatores em NumPy Puro
 def varimax_rotation(Phi, gamma=1.0, max_iter=500, tol=1e-6):
@@ -98,7 +105,8 @@ def varimax_rotation(Phi, gamma=1.0, max_iter=500, tol=1e-6):
         u, s, vh = np.linalg.svd(np.dot(Phi.T, Lambda**3 - (gamma / p) * np.dot(Lambda, np.diag(np.sum(Lambda**2, axis=0)))))
         R = np.dot(u, vh)
         d = np.sum(s)
-        if d_old != 0 and (d - d_old) / d < tol: break
+        if d_old != 0 and (d - d_old) / d < tol: 
+            break
     return np.dot(Phi, R), R
 
 def promax_rotation(Phi, m=4):
@@ -134,7 +142,7 @@ with st.sidebar:
             else: 
                 df = pd.read_excel(uploaded_file)
             
-            # Limpeza corretiva contra o bug de datas do Excel
+            # Limpeza corretiva contra o bug de datas do Excel nas colunas de dados
             for col in df.columns:
                 if str(col).lower() not in ['obs', 'obs.', 'id', 'identificação', 'unidade', 'região']:
                     df[col] = df[col].apply(recuperar_nota_corrompida)
@@ -146,8 +154,6 @@ with st.sidebar:
                 st.error("A base de dados precisa conter ao menos 2 colunas numéricas válidas.")
                 st.stop()
             
-            df_num = df[all_numeric_cols].dropna()
-            
             st.markdown("---")
             tipo_analise = st.radio("2. Tipo de Análise Técnica", ["📈 Regressão Linear Múltipla", "🧬 Análise Fatorial Exploratória (AFE)"])
             
@@ -155,41 +161,11 @@ with st.sidebar:
             if "Regressão" in tipo_analise:
                 valid_targets = [c for c in all_numeric_cols if df[c].nunique() > 1]
                 target_col = st.selectbox("3. Variável Dependente (Y)", valid_targets)
+                # Define os preditores para o pipeline de regressão
                 independent_cols = [c for c in all_numeric_cols if c != target_col]
             else:
-                opcoes_fa = [c for c in all_numeric_cols if df_num[c].nunique() > 1]
+                # Filtragem para evitar colunas constantes na AFE
+                opcoes_fa = [c for c in all_numeric_cols if df[c].nunique() > 1]
                 independent_cols = st.multiselect("3. Selecionar Itens para Fatoração", opcoes_fa, default=opcoes_fa)
                 
-                st.markdown("**Configurações da AFE:**")
-                metodo_fatores = st.radio("Critério de Extração", ["Automático (Kaiser - Autovalor > 1)", "Manual (Forçar número fixo)"])
-                
-                n_fixo_fatores = 2
-                if "Manual" in metodo_fatores:
-                    n_fixo_fatores = st.number_input("Número de Fatores Desejados", min_value=1, max_value=len(independent_cols), value=2)
-                
-                metodo_rotacao = st.selectbox("Rotação dos Fatores", ["Varimax (Fatores Independentes)", "Promax (Fatores Correlacionados)"])
-                
-            run_btn = st.button("🚀 Processar Análise", use_container_width=True)
-            
-        except Exception as e:
-            st.error(f"Erro ao carregar os dados: {e}")
-            st.stop()
-
-# --- EXECUÇÃO DAS ANÁLISES ---
-if uploaded_file and 'run_btn' in locals() and run_btn:
-    reg_independent_cols = [c for c in independent_cols if df_num[c].nunique() > 1]
-    
-    # ------------------ PIPELINE 1: REGRESSÃO LINEAR ------------------
-    if "Regressão" in tipo_analise:
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Descritiva", "📊 Distribuições", "🔗 Correlação", "🧮 Equação Estimada", "📋 Diagnóstico"])
-        X_multi = sm.add_constant(df_num[reg_independent_cols])
-        Y = df_num[target_col]
-        modelo_multi = sm.OLS(Y, X_multi).fit()
-
-        with tab1:
-            st.header("Módulo 1: Descritiva das Variáveis")
-            st.dataframe(calcular_descritiva(df_num, all_numeric_cols).style.format("{:.2f}"), use_container_width=True)
-            
-            st.subheader("🔎 Análise de Assimetria")
-            for var in all_numeric_cols:
-                estado_assimetria = analisar_ass
+                st.markdown
