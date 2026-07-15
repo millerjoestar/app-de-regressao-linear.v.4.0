@@ -24,7 +24,7 @@ st.markdown("""
     h1, h2, h3 { color: #2C3E50; }
     .stAlert { margin-top: 1rem; }
     </style>
-""", unsafe_allow_html=True) # <-- Corrigido aqui (era unsafe_allow_True)
+""", unsafe_allow_html=True)
 
 st.title("📊 Plataforma de Análise Estatística Avançada")
 st.markdown("Faça o upload da sua base de dados, configure os parâmetros e gere relatórios científicos completos.")
@@ -135,37 +135,303 @@ with st.sidebar:
     st.header("⚙️ Painel de Controle")
     uploaded_file = st.file_uploader("1. Carregar Base de Dados", type=["csv", "xlsx"])
     
-    if uploaded_file:
+    df = None
+    if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith('.csv'): 
                 df = pd.read_csv(uploaded_file)
             else: 
                 df = pd.read_excel(uploaded_file)
-            
-            # Limpeza corretiva contra o bug de datas do Excel nas colunas de dados
-            for col in df.columns:
-                if str(col).lower() not in ['obs', 'obs.', 'id', 'identificação', 'unidade', 'região']:
-                    df[col] = df[col].apply(recuperar_nota_corrompida)
+        except Exception as e:
+            st.error(f"Erro ao carregar os dados: {e}")
+            st.stop()
 
-            all_numeric_cols = [c for c in df.select_dtypes(include=np.number).columns.tolist() if str(c).lower() not in ['obs', 'obs.', 'id']]
-            all_numeric_cols = [c for c in all_numeric_cols if df[c].notna().sum() > 0]
+    if df is not None:
+        # Limpeza corretiva contra o bug de datas do Excel nas colunas de dados
+        for col in df.columns:
+            if str(col).lower() not in ['obs', 'obs.', 'id', 'identificação', 'unidade', 'região']:
+                df[col] = df[col].apply(recuperar_nota_corrompida)
 
-            if len(all_numeric_cols) < 2:
-                st.error("A base de dados precisa conter ao menos 2 colunas numéricas válidas.")
-                st.stop()
+        all_numeric_cols = [c for c in df.select_dtypes(include=np.number).columns.tolist() if str(c).lower() not in ['obs', 'obs.', 'id']]
+        all_numeric_cols = [c for c in all_numeric_cols if df[c].notna().sum() > 0]
+
+        if len(all_numeric_cols) < 2:
+            st.error("A base de dados precisa conter ao menos 2 colunas numéricas válidas.")
+            st.stop()
+        
+        st.markdown("---")
+        tipo_analise = st.radio("2. Tipo de Análise Técnica", ["📈 Regressão Linear Múltipla", "🧬 Análise Fatorial Exploratória (AFE)"])
+        
+        st.markdown("---")
+        if "Regressão" in tipo_analise:
+            valid_targets = [c for c in all_numeric_cols if df[c].nunique() > 1]
+            target_col = st.selectbox("3. Variável Dependente (Y)", valid_targets)
+            independent_cols = [c for c in all_numeric_cols if c != target_col]
+        else:
+            opcoes_fa = [c for c in all_numeric_cols if df[c].nunique() > 1]
+            independent_cols = st.multiselect("3. Selecionar Itens para Fatoração", opcoes_fa, default=opcoes_fa)
             
-            st.markdown("---")
-            tipo_analise = st.radio("2. Tipo de Análise Técnica", ["📈 Regressão Linear Múltipla", "🧬 Análise Fatorial Exploratória (AFE)"])
+            st.markdown("**Configurações da AFE:**")
+            metodo_fatores = st.radio("Critério de Extração", ["Automático (Kaiser - Autovalor > 1)", "Manual (Forçar número fixo)"])
             
-            st.markdown("---")
-            if "Regressão" in tipo_analise:
-                valid_targets = [c for c in all_numeric_cols if df[c].nunique() > 1]
-                target_col = st.selectbox("3. Variável Dependente (Y)", valid_targets)
-                # Define os preditores para o pipeline de regressão
-                independent_cols = [c for c in all_numeric_cols if c != target_col]
+            n_fixo_fatores = 2
+            if "Manual" in metodo_fatores:
+                n_fixo_fatores = st.number_input("Número de Fatores Desejados", min_value=1, max_value=len(independent_cols), value=2)
+            
+            metodo_rotacao = st.selectbox("Rotação dos Fatores", ["Varimax (Fatores Independentes)", "Promax (Fatores Correlacionados)"])
+            
+        run_btn = st.button("🚀 Processar Análise", use_container_width=True)
+
+# --- EXECUÇÃO DAS ANÁLISES ---
+if uploaded_file is not None and df is not None and 'run_btn' in locals() and run_btn:
+    reg_independent_cols = [c for c in independent_cols if df[c].dropna().nunique() > 1]
+    
+    # ------------------ PIPELINE 1: REGRESSÃO LINEAR ------------------
+    if "Regressão" in tipo_analise:
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Descritiva", "📊 Distribuições", "🔗 Correlação", "🧮 Equação Estimada", "📋 Diagnóstico"])
+        
+        colunas_reg = [target_col] + reg_independent_cols
+        df_reg = df[colunas_reg].dropna()
+        
+        X_multi = sm.add_constant(df_reg[reg_independent_cols])
+        Y = df_reg[target_col]
+        modelo_multi = sm.OLS(Y, X_multi).fit()
+
+        with tab1:
+            st.header("Módulo 1: Descritiva das Variáveis")
+            st.dataframe(calcular_descritiva(df_reg, colunas_reg).style.format("{:.2f}"), use_container_width=True)
+            
+            st.subheader("🔎 Análise de Assimetria")
+            for var in colunas_reg:
+                estado_assimetria = analisar_assimetria(df_reg[var])
+                st.markdown(f"- **{var}:** {estado_assimetria}")
+
+        with tab2:
+            st.header("Módulo 2: Distribuições")
+            cols_ui = st.columns(2)
+            for i, col in enumerate(colunas_reg):
+                with cols_ui[i % 2]:
+                    fig, ax = plt.subplots(figsize=(5, 3))
+                    sns.histplot(df_reg[col], kde=True, ax=ax, color='#3498DB')
+                    st.pyplot(fig)
+                    plt.close()
+
+        with tab3:
+            st.header("Módulo 3: Correlações Lineares")
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.heatmap(df_reg.corr(), annot=True, cmap="coolwarm", fmt=".2f")
+            st.pyplot(fig)
+            plt.close()
+
+        with tab4:
+            st.header("Módulo 4: Equação de Regressão Múltipla")
+            intercepto = modelo_multi.params['const']
+            partes_equacao = [f"{intercepto:.4f}"]
+            for col in reg_independent_cols:
+                coef = modelo_multi.params[col]
+                partes_equacao.append(f"{'+' if coef >= 0 else '-'} ({abs(coef):.4f} \\cdot {formatar_texto_latex(col)})")
+            st.info("### Equação Estimada:")
+            st.write(f"$$ \\widehat{{{formatar_texto_latex(target_col)}}} = {' '.join(partes_equacao)} $$")
+
+        with tab5:
+            st.header("Módulo 5: Diagnóstico Completo")
+            st.text(modelo_multi.summary().tables[0].as_text())
+            st.text(modelo_multi.summary().tables[1].as_text())
+
+    # ------------------ PIPELINE 2: ANÁLISE FATORIAL COMPLETA ------------------
+    else:
+        st.header("🧬 Relatório Científico: Análise Fatorial Exploratória")
+        
+        if len(reg_independent_cols) < 3:
+            st.warning("Selecione pelo menos 3 variáveis numéricas para processar a análise fatorial.")
+        else:
+            df_fa = df[reg_independent_cols].dropna().astype(float)
+            
+            tab_fa1, tab_fa2, tab_fa3, tab_fa4, tab_fa5 = st.tabs([
+                "📋 1. Validação & Adequabilidade", 
+                "📐 2. Variância Explicada (Kaiser)", 
+                "📊 3. Matriz de Cargas & Heatmap", 
+                "🧬 4. Comunalidades & Confiabilidade",
+                "📥 5. Escores Fatoriais (Download)"
+            ])
+            
+            # --- CÁLCULO CORE DOS AUTOVALORES ---
+            corr_matrix_df = df_fa.corr()
+            corr_matrix_np = corr_matrix_df.values
+            ev, _ = eigh(corr_matrix_np)
+            ev = sorted(ev, reverse=True)
+            
+            # Definição do número final de fatores
+            if "Automático" in metodo_fatores:
+                n_fatores = max(1, sum(1 for x in ev if x >= 1.0))
             else:
-                # Filtragem para evitar colunas constantes na AFE
-                opcoes_fa = [c for c in all_numeric_cols if df[c].nunique() > 1]
-                independent_cols = st.multiselect("3. Selecionar Itens para Fatoração", opcoes_fa, default=opcoes_fa)
+                n_fatores = min(n_fixo_fatores, len(reg_independent_cols))
+
+            # --- TAB 1: ADEQUABILIDADE ---
+            with tab_fa1:
+                st.subheader("Testes de Validação Amostral (SPSS Style)")
+                if not FA_AVAILABLE:
+                    st.warning("Biblioteca 'factor_analyzer' ausente na nuvem. Exibindo Matriz de Correlação.")
+                else:
+                    try:
+                        chi_square, p_value_bartlett = calculate_bartlett_sphericity(df_fa)
+                        kmo_all, kmo_model = calculate_kmo(df_fa)
+                        
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.metric(label="KMO Geral (Kaiser-Meyer-Olkin)", value=f"{kmo_model:.3f}")
+                            if kmo_model >= 0.6: 
+                                st.success("✓ Amostra Adequada (KMO > 0.60)")
+                            else: 
+                                st.warning("⚠️ Amostra Fraca (KMO < 0.60)")
+                        with c2:
+                            st.metric(label="Bartlett Sphericity (p-valor)", value=format_p_value(p_value_bartlett))
+                            if p_value_bartlett < 0.05: 
+                                st.success("✓ Matriz elegível para agrupamento fatorial.")
+                        
+                        # MSA Individual
+                        st.markdown("#### Medida de Adequabilidade Amostral Individual (MSA)")
+                        df_msa = pd.DataFrame({'Variável': reg_independent_cols, 'MSA Individual': kmo_all})
+                        
+                        styler_msa = df_msa.style
+                        try:
+                            styler_msa = styler_msa.map(lambda x: 'background-color: #ffcccc' if x < 0.5 else '', subset=['MSA Individual'])
+                        except AttributeError:
+                            styler_msa = styler_msa.applymap(lambda x: 'background-color: #ffcccc' if x < 0.5 else '', subset=['MSA Individual'])
+                            
+                        st.dataframe(styler_msa.format({'MSA Individual': '{:.3f}'}), use_container_width=True)
+                        st.caption("Valores de MSA abaixo de 0.50 sugerem que a variável correspondente deve ser removida do modelo.")
+                    except Exception as e:
+                        st.error(f"Erro ao computar KMO/Bartlett: {e}")
+
+            # --- TAB 2: VARIÂNCIA EXPLICADA ---
+            with tab_fa2:
+                st.subheader("Tabela de Variância Total Explicada")
+                total_var = sum(ev)
+                var_explicada = [(x / total_var) * 100 for x in ev]
+                var_acumulada = np.cumsum(var_explicada)
                 
-                st.markdown
+                rows_variancia = []
+                for i in range(len(ev)):
+                    rows_variancia.append({
+                        "Fator": f"Fator {i+1}",
+                        "Autovalor (Eigenvalue)": ev[i],
+                        "% da Variância": var_explicada[i],
+                        "% Acumulada": var_acumulada[i]
+                    })
+                df_var_exp = pd.DataFrame(rows_variancia).set_index("Fator")
+                st.dataframe(df_var_exp.style.format("{:.3f}"), use_container_width=True)
+                
+                st.markdown("---")
+                st.subheader("Gráfico de Sedimentação (Scree Plot)")
+                fig, ax = plt.subplots(figsize=(6, 3))
+                ax.scatter(range(1, len(ev) + 1), ev, color='#E74C3C', zorder=3)
+                ax.plot(range(1, len(ev) + 1), ev, color='#34495E', linestyle='--')
+                ax.axhline(y=1, color='gray', linestyle=':')
+                ax.set_title("Scree Plot")
+                ax.set_xlabel("Fatores")
+                ax.set_ylabel("Autovalores")
+                st.pyplot(fig)
+                plt.close()
+
+            # --- TAB 3: MATRIZ DE CARGAS & HEATMAP ---
+            with tab_fa3:
+                st.subheader(f"Cargas Fatoriais Rotacionadas ({metodo_rotacao})")
+                try:
+                    # Extração inicial via SVD
+                    A = df_fa.values - np.mean(df_fa.values, axis=0)
+                    _, _, Vht = np.linalg.svd(A, full_matrices=False)
+                    cargas_iniciais = Vht[:n_fatores].T * np.sqrt(ev[:n_fatores])
+                    
+                    # Aplicação do algoritmo de rotação escolhido
+                    if n_fatores > 1:
+                        if "Promax" in metodo_rotacao:
+                            cargas_rotacionadas = promax_rotation(cargas_iniciais)
+                        else:
+                            cargas_rotacionadas, _ = varimax_rotation(cargas_iniciais)
+                    else:
+                        cargas_rotacionadas = cargas_iniciais
+                        
+                    colunas_fatores = [f"Fator {i+1}" for i in range(n_fatores)]
+                    df_cargas = pd.DataFrame(cargas_rotacionadas, columns=colunas_fatores, index=reg_independent_cols)
+                    
+                    # Layout lado a lado: Tabela e Heatmap das Cargas
+                    c1, c2 = st.columns([1, 1])
+                    with c1:
+                        st.dataframe(df_cargas.style.format("{:.3f}").background_gradient(cmap="bwr", vmin=-1, vmax=1), use_container_width=True)
+                    with c2:
+                        fig, ax = plt.subplots(figsize=(5, 4))
+                        sns.heatmap(df_cargas, annot=True, cmap="bwr", center=0, fmt=".2f", vmin=-1, vmax=1, ax=ax)
+                        ax.set_title("Heatmap das Cargas Fatoriais")
+                        st.pyplot(fig)
+                        plt.close()
+                        
+                    # Nomeação Automática Sugerida baseada nas cargas mais altas
+                    st.markdown("#### 💡 Sugestão de Nomeação Conceitual dos Fatores")
+                    for fat in colunas_fatores:
+                        top_vars = df_cargas[fat].abs().nlargest(3).index.tolist()
+                        st.markdown(f"- **{fat}:** Poderia ser rotulado como reflexo de **{', '.join(top_vars)}** (maiores forças de carga).")
+                        
+                except Exception as e:
+                    st.error(f"Erro ao calcular cargas fatoriais: {e}")
+
+            # --- TAB 4: COMUNALIDADES & CONFIABILIDADE ---
+            with tab_fa4:
+                st.subheader("Comunalidades ($h^2$) das Variáveis")
+                try:
+                    comunalidades = np.sum(cargas_rotacionadas**2, axis=1)
+                    df_comun = pd.DataFrame({'Variável': reg_independent_cols, 'Comunalidade': comunalidades}).set_index('Variável')
+                    
+                    styler_comun = df_comun.style
+                    try:
+                        styler_comun = styler_comun.map(lambda x: 'background-color: #ffcccc' if x < 0.5 else '', subset=['Comunalidade'])
+                    except AttributeError:
+                        styler_comun = styler_comun.applymap(lambda x: 'background-color: #ffcccc' if x < 0.5 else '', subset=['Comunalidade'])
+                    
+                    st.dataframe(styler_comun.format({'Comunalidade': '{:.3f}'}), use_container_width=True)
+                    st.caption("Valores destacados em vermelho (< 0.50) explicam pouca variância e deveriam ser removidos.")
+                    
+                    # Confiabilidade (Alfa de Cronbach por Fator)
+                    st.markdown("---")
+                    st.subheader("Confiabilidade da Escala (Alfa de Cronbach por Fator)")
+                    for i, fat in enumerate(colunas_fatores):
+                        dominantes = df_cargas.index[df_cargas[fat].abs() >= 0.40].tolist()
+                        if len(dominantes) >= 2:
+                            alfa_fator = calcular_cronbach(df_fa[dominantes])
+                            st.markdown(f"- **{fat}:** $\\alpha$ = **{alfa_fator:.3f}** (Baseado em: {', '.join(dominantes)})")
+                        else:
+                            st.markdown(f"- **{fat}:** Não há itens suficientes carregando fortemente para calcular a consistência interna.")
+                except Exception as e:
+                    st.error(f"Erro no processamento das comunalidades/Cronbach: {e}")
+
+            # --- TAB 5: ESCORES FATORIAIS (DOWNLOAD) ---
+            with tab_fa5:
+                st.subheader("Geração e Download dos Escores Fatoriais")
+                st.markdown("Use esta aba para converter os dados originais das colunas em novos fatores resumidos (Escores) salvos em uma nova planilha.")
+                
+                try:
+                    R_inv = np.linalg.pinv(corr_matrix_np)
+                    pesos_escores = np.dot(R_inv, cargas_rotacionadas)
+                    
+                    df_fa_std = (df_fa - df_fa.mean()) / df_fa.std()
+                    escores_np = np.dot(df_fa_std.values, pesos_escores)
+                    
+                    df_escores = pd.DataFrame(escores_np, columns=colunas_fatores, index=df_fa.index)
+                    
+                    df_completo_com_fatores = df.copy()
+                    for fat in colunas_fatores:
+                        df_completo_com_fatores[fat] = df_escores[fat]
+                        
+                    st.markdown("#### Pré-visualização dos Novos Fatores Gerados por Registro:")
+                    st.dataframe(df_escores.head(10).style.format("{:.4f}"), use_container_width=True)
+                    
+                    csv_export = df_completo_com_fatores.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Baixar Base de Dados Atualizada com os Fatores (CSV)",
+                        data=csv_export,
+                        file_name="base_com_escores_fatoriais.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao computar os escores fatoriais: {e}")
