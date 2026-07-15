@@ -102,13 +102,9 @@ def varimax_rotation(Phi, gamma=1.0, max_iter=500, tol=1e-6):
     return np.dot(Phi, R), R
 
 def promax_rotation(Phi, m=4):
-    # Executa primeiro Varimax
     L_varimax, R_varimax = varimax_rotation(Phi)
-    # Promax Target
     P = np.abs(L_varimax)**m / L_varimax
-    # Regressão dos pesos mínimos quadrados
     coef = np.linalg.lstsq(L_varimax, P, rcond=None)[0]
-    # Ortogonalização do resultado
     u, s, vh = np.linalg.svd(coef)
     T = np.dot(u, vh)
     return np.dot(L_varimax, T)
@@ -163,37 +159,4 @@ with st.sidebar:
                 independent_cols = st.multiselect("3. Selecionar Itens para Fatoração", opcoes_fa, default=opcoes_fa)
                 
                 st.markdown("**Configurações da AFE:**")
-                metodo_fatores = st.radio("Critério de Extração", ["Automático (Kaiser - Autovalor > 1)", "Manual (Forçar número fixo)"])
-                
-                n_fixo_fatores = 2
-                if "Manual" in metodo_fatores:
-                    n_fixo_fatores = st.number_input("Número de Fatores Desejados", min_value=1, max_value=len(independent_cols), value=2)
-                
-                metodo_rotacao = st.selectbox("Rotação dos Fatores", ["Varimax (Fatores Independentes)", "Promax (Fatores Correlacionados)"])
-                
-            run_btn = st.button("🚀 Processar Análise", use_container_width=True)
-            
-        except Exception as e:
-            st.error(f"Erro ao carregar os dados: {e}")
-            st.stop()
-
-# --- EXECUÇÃO DAS ANÁLISES ---
-if uploaded_file and 'run_btn' in locals() and run_btn:
-    reg_independent_cols = [c for c in independent_cols if df_num[c].nunique() > 1]
-    
-    # ------------------ PIPELINE 1: REGRESSÃO LINEAR ------------------
-    if "Regressão" in tipo_analise:
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Descritiva", "📊 Distribuições", "🔗 Correlação", "🧮 Equação Estimada", "📋 Diagnóstico"])
-        X_multi = sm.add_constant(df_num[reg_independent_cols])
-        Y = df_num[target_col]
-        modelo_multi = sm.OLS(Y, X_multi).fit()
-
-        with tab1:
-            st.header("Módulo 1: Descritiva das Variáveis")
-            st.dataframe(calcular_descritiva(df_num, all_numeric_cols).style.format("{:.2f}"), use_container_width=True)
-
-        with tab2:
-            st.header("Módulo 2: Distribuições")
-            cols_ui = st.columns(2)
-            for i, col in enumerate(all_numeric_cols):
-                with
+                metodo_fatores = st.radio("Critério de Extração",
