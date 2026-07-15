@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.api as sm
-from scipy.stats import skew, gaussian_kde
+from scipy.stats import skew
 from scipy.linalg import eigh
 import re
 
@@ -88,4 +88,108 @@ def recuperar_nota_corrompida(val):
     except: return np.nan
 
 # Rotações de Fatores em NumPy Puro
-def varimax_rotation(
+def varimax_rotation(Phi, gamma=1.0, max_iter=500, tol=1e-6):
+    p, k = Phi.shape
+    R = np.eye(k)
+    d = 0
+    for i in range(max_iter):
+        d_old = d
+        Lambda = np.dot(Phi, R)
+        u, s, vh = np.linalg.svd(np.dot(Phi.T, Lambda**3 - (gamma / p) * np.dot(Lambda, np.diag(np.sum(Lambda**2, axis=0)))))
+        R = np.dot(u, vh)
+        d = np.sum(s)
+        if d_old != 0 and (d - d_old) / d < tol: break
+    return np.dot(Phi, R), R
+
+def promax_rotation(Phi, m=4):
+    L_varimax, R_varimax = varimax_rotation(Phi)
+    P = np.abs(L_varimax)**m / L_varimax
+    coef = np.linalg.lstsq(L_varimax, P, rcond=None)[0]
+    u, s, vh = np.linalg.svd(coef)
+    T = np.dot(u, vh)
+    return np.dot(L_varimax, T)
+
+# Cálculo do Alfa de Cronbach
+def calcular_cronbach(df_vars):
+    if df_vars.shape[1] < 2:
+        return np.nan
+    df_clean = df_vars.dropna()
+    k = df_clean.shape[1]
+    variancias_itens = df_clean.var(ddof=1).sum()
+    variancia_total = df_clean.sum(axis=1).var(ddof=1)
+    if variancia_total == 0:
+        return 0.0
+    alfa = (k / (k - 1)) * (1 - (variancias_itens / variancia_total))
+    return alfa
+
+# Interface Lateral (Sidebar)
+with st.sidebar:
+    st.header("⚙️ Painel de Controle")
+    uploaded_file = st.file_uploader("1. Carregar Base de Dados", type=["csv", "xlsx"])
+    
+    if uploaded_file:
+        try:
+            if uploaded_file.name.endswith('.csv'): 
+                df = pd.read_csv(uploaded_file)
+            else: 
+                df = pd.read_excel(uploaded_file)
+            
+            # Limpeza corretiva contra o bug de datas do Excel
+            for col in df.columns:
+                if str(col).lower() not in ['obs', 'obs.', 'id', 'identificação', 'unidade', 'região']:
+                    df[col] = df[col].apply(recuperar_nota_corrompida)
+
+            all_numeric_cols = [c for c in df.select_dtypes(include=np.number).columns.tolist() if str(c).lower() not in ['obs', 'obs.', 'id']]
+            all_numeric_cols = [c for c in all_numeric_cols if df[c].notna().sum() > 0]
+
+            if len(all_numeric_cols) < 2:
+                st.error("A base de dados precisa conter ao menos 2 colunas numéricas válidas.")
+                st.stop()
+            
+            df_num = df[all_numeric_cols].dropna()
+            
+            st.markdown("---")
+            tipo_analise = st.radio("2. Tipo de Análise Técnica", ["📈 Regressão Linear Múltipla", "🧬 Análise Fatorial Exploratória (AFE)"])
+            
+            st.markdown("---")
+            if "Regressão" in tipo_analise:
+                valid_targets = [c for c in all_numeric_cols if df[c].nunique() > 1]
+                target_col = st.selectbox("3. Variável Dependente (Y)", valid_targets)
+                independent_cols = [c for c in all_numeric_cols if c != target_col]
+            else:
+                opcoes_fa = [c for c in all_numeric_cols if df_num[c].nunique() > 1]
+                independent_cols = st.multiselect("3. Selecionar Itens para Fatoração", opcoes_fa, default=opcoes_fa)
+                
+                st.markdown("**Configurações da AFE:**")
+                metodo_fatores = st.radio("Critério de Extração", ["Automático (Kaiser - Autovalor > 1)", "Manual (Forçar número fixo)"])
+                
+                n_fixo_fatores = 2
+                if "Manual" in metodo_fatores:
+                    n_fixo_fatores = st.number_input("Número de Fatores Desejados", min_value=1, max_value=len(independent_cols), value=2)
+                
+                metodo_rotacao = st.selectbox("Rotação dos Fatores", ["Varimax (Fatores Independentes)", "Promax (Fatores Correlacionados)"])
+                
+            run_btn = st.button("🚀 Processar Análise", use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"Erro ao carregar os dados: {e}")
+            st.stop()
+
+# --- EXECUÇÃO DAS ANÁLISES ---
+if uploaded_file and 'run_btn' in locals() and run_btn:
+    reg_independent_cols = [c for c in independent_cols if df_num[c].nunique() > 1]
+    
+    # ------------------ PIPELINE 1: REGRESSÃO LINEAR ------------------
+    if "Regressão" in tipo_analise:
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Descritiva", "📊 Distribuições", "🔗 Correlação", "🧮 Equação Estimada", "📋 Diagnóstico"])
+        X_multi = sm.add_constant(df_num[reg_independent_cols])
+        Y = df_num[target_col]
+        modelo_multi = sm.OLS(Y, X_multi).fit()
+
+        with tab1:
+            st.header("Módulo 1: Descritiva das Variáveis")
+            st.dataframe(calcular_descritiva(df_num, all_numeric_cols).style.format("{:.2f}"), use_container_width=True)
+            
+            st.subheader("🔎 Análise de Assimetria")
+            for var in all_numeric_cols:
+                estado_assimetria = analisar_ass
